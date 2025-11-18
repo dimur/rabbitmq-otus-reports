@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Temperature Dashboard</title>
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <script src="mqtt.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        h1 { margin-bottom: 10px; }
+        #connect { margin-bottom: 20px; font-weight: bold; }
+        table { border-collapse: collapse; width: 60%; min-width: 400px; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: center; }
+        th { background-color: #f2f2f2; }
+        tr.alert td { background-color: #f8d7da; color: #721c24; }
+        tr.ok td { background-color: #d4edda; color: #155724; }
+    </style>
+</head>
+<body>
+    <h1>Temperature Dashboard</h1>
+    <div id="connect">Not connected</div>
+    <table>
+        <thead>
+            <tr>
+                <th>Sensor</th>
+                <th>Temperature</th>
+                <th>Status</th>
+                <th>Timestamp</th>
+            </tr>
+        </thead>
+        <tbody>
+            <!-- Датчики будут добавляться динамически -->
+        </tbody>
+    </table>
+</body>
+</html>

@@ -1,0 +1,224 @@
+version: '3.8'
+
+# Общие переменные окружения для всех контейнеров RabbitMQ
+x-rabbitmq-env: &rabbitmq-env
+  RABBITMQ_ERLANG_COOKIE: 'supersecretcookie'   # cookie для кластера
+  RABBITMQ_DEFAULT_USER: guest
+  RABBITMQ_DEFAULT_PASS: guest
+
+# Общие переменные окружения для сенсоров
+x-sensor-env: &sensor-env
+  MQTT_PORT: '1883'
+  MQTT_RETAIN: 'true'
+  PUBLISH_INTERVAL: '60'   # интервал публикации сообщений в секундах
+
+services:
+  # -------------------------
+  #   RabbitMQ — узел 1
+  # -------------------------
+  rabbitmq1:
+    build:
+      context: ./rabbitmq      # Dockerfile с конфигурацией RabbitMQ
+    container_name: rabbitmq1
+    hostname: rabbitmq1
+    environment:
+      <<: *rabbitmq-env
+      RABBITMQ_NODENAME: rabbit@rabbitmq1   # имя ноды в кластере
+    volumes:
+      - rabbit1_data:/var/lib/rabbitmq      # данные узла
+      - ./rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # -------------------------
+  #   RabbitMQ — узел 2
+  # -------------------------
+  rabbitmq2:
+    build:
+      context: ./rabbitmq
+    container_name: rabbitmq2
+    hostname: rabbitmq2
+    environment:
+      <<: *rabbitmq-env
+      RABBITMQ_NODENAME: rabbit@rabbitmq2
+    volumes:
+      - rabbit2_data:/var/lib/rabbitmq
+      - ./rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      - ./rabbitmq/cluster-entrypoint.sh:/usr/local/bin/cluster-entrypoint.sh:ro  # скрипт для присоединения к кластеру
+    depends_on:
+      - rabbitmq1       # узел 1 должен быть доступен
+    command: ["/usr/local/bin/cluster-entrypoint.sh", "rabbitmq2", "rabbitmq1"]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # -------------------------
+  #   RabbitMQ — узел 3
+  # -------------------------
+  rabbitmq3:
+    build:
+      context: ./rabbitmq
+    container_name: rabbitmq3
+    hostname: rabbitmq3
+    environment:
+      <<: *rabbitmq-env
+      RABBITMQ_NODENAME: rabbit@rabbitmq3
+    volumes:
+      - rabbit3_data:/var/lib/rabbitmq
+      - ./rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      - ./rabbitmq/cluster-entrypoint.sh:/usr/local/bin/cluster-entrypoint.sh:ro
+    depends_on:
+      - rabbitmq1
+    command: ["/usr/local/bin/cluster-entrypoint.sh", "rabbitmq3", "rabbitmq1"]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # -------------------------
+  #   HAProxy — балансировщик
+  # -------------------------
+  haproxy:
+    image: haproxy:2.8
+    container_name: haproxy
+    ports:
+      - "5672:5672"   # AMQP (RabbitMQ clients)
+      - "15672:15672" # RabbitMQ Management UI
+      - "15675:15675" # MQTT over WebSocket
+      - "1883:1883"   # MQTT broker port
+    volumes:
+      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    depends_on:
+      - rabbitmq1
+      - rabbitmq2
+      - rabbitmq3
+
+  # -------------------------
+  #   HTTP Dashboard
+  # -------------------------
+  httpd:
+    build:
+      context: ./httpd   # простой web-сервер с дашбордом
+    depends_on:
+      - haproxy
+    ports:
+      - "127.0.0.1:8080:8080"  # локальный доступ к UI
+    volumes:
+      - ./httpd/site:/site:ro  # HTML + JS
+
+  # -------------------------
+  #   Сенсор 1
+  # -------------------------
+  sensor1:
+    build:
+      context: ./sensor   # скрипт имитирующий MQTT-публикации
+    depends_on:
+      - rabbitmq1
+    environment:
+      <<: *sensor-env
+      MQTT_HOST: 'rabbitmq1'
+      MQTT_TOPIC: 'temperature/data_center_a1'
+
+  # -------------------------
+  #   Сенсор 2
+  # -------------------------
+  sensor2:
+    build:
+      context: ./sensor
+    depends_on:
+      - rabbitmq2
+    environment:
+      <<: *sensor-env
+      MQTT_HOST: 'rabbitmq2'
+      MQTT_TOPIC: 'temperature/data_center_b1'
+
+  # -------------------------
+  #   Сенсор 3
+  # -------------------------
+  sensor3:
+    build:
+      context: ./sensor
+    depends_on:
+      - rabbitmq3
+    environment:
+      <<: *sensor-env
+      MQTT_HOST: 'rabbitmq3'
+      MQTT_TOPIC: 'temperature/data_center_c1'
+
+  # -------------------------
+  #   Mailpit — тестовый SMTP сервер
+  # -------------------------
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: mailpit
+    ports:
+      - "8025:8025"  # web UI для просмотра писем
+      - "1025:1025"  # SMTP порт
+
+  # -------------------------
+  #   Email Sender — отправка писем при превышении температуры
+  # -------------------------
+  email_sender:
+    build:
+      context: ./email_sender
+    environment:
+      MQTT_HOST: "haproxy"          # читаем все MQTT сообщения через LB
+      MQTT_PORT: "1883"
+      MQTT_TOPIC: "temperature/#"   # подписка на все темы
+      TEMPERATURE_THRESHOLD: "25"   # порог температуры (°C)
+      SMTP_HOST: "mailpit"
+      SMTP_PORT: "1025"
+      EMAIL_FROM: "alert@example.com"
+      EMAIL_TO: "user@example.com"
+    depends_on:
+      - haproxy
+      - mailpit
+
+  # -------------------------
+  #   TimescaleDB — хранилище временных рядов
+  # -------------------------
+  timescaledb:
+    image: timescale/timescaledb:latest-pg14
+    container_name: timescaledb
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: metrics
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  # -------------------------
+  #   DB Writer — подписчик MQTT, пишет данные в TimescaleDB
+  # -------------------------
+  db_writer:
+    build:
+      context: ./db_writer
+    depends_on:
+      - haproxy
+      - timescaledb
+    environment:
+      MQTT_HOST: "haproxy"
+      MQTT_PORT: "1883"
+      MQTT_TOPIC: "temperature/#"
+      DB_HOST: "timescaledb"
+      DB_PORT: "5432"
+      DB_NAME: "metrics"
+      DB_USER: "postgres"
+      DB_PASS: "postgres"
+
+# -------------------------
+#   Персистентные тома
+# -------------------------
+volumes:
+  rabbit1_data:
+  rabbit2_data:
+  rabbit3_data:
+  timescaledb_data:
