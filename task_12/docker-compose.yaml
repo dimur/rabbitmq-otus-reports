@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    hostname: rabbit1
+    container_name: rabbit1
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+      - "5552:5552"
+    networks:
+      - perfnet
+
+  perf-test:
+    image: pivotalrabbitmq/perf-test:latest
+    container_name: perf-test
+    depends_on:
+      - rabbitmq
+    networks:
+      - perfnet
+    entrypoint: ["sleep","infinity"]
+
+  perf-test-stream:
+    image: pivotalrabbitmq/stream-perf-test:latest
+    container_name: perf-test-stream
+    depends_on:
+      - rabbitmq
+    networks:
+      - perfnet
+    entrypoint: ["sleep","infinity"]
+
+networks:
+  perfnet:
+    driver: bridge

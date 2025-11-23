@@ -1,0 +1,105 @@
+version: '3.8'
+
+# Общие переменные окружения для всех контейнеров RabbitMQ
+x-rabbitmq-env: &rabbitmq-env
+  RABBITMQ_ERLANG_COOKIE: 'supersecretcookie'   # cookie для кластера
+  RABBITMQ_DEFAULT_USER: guest
+  RABBITMQ_DEFAULT_PASS: guest
+
+services:
+  # -------------------------
+  #   RabbitMQ — узел 1
+  # -------------------------
+  rabbitmq1:
+    build:
+      context: ./rabbitmq      # Dockerfile с конфигурацией RabbitMQ
+    container_name: rabbitmq1
+    hostname: rabbitmq1
+    environment:
+      <<: *rabbitmq-env
+      RABBITMQ_NODENAME: rabbit@rabbitmq1   # имя ноды в кластере
+    volumes:
+      - rabbit1_data_test:/var/lib/rabbitmq      # данные узла
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - perfnet
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+
+  # -------------------------
+  #   RabbitMQ — узел 2
+  # -------------------------
+  rabbitmq2:
+    build:
+      context: ./rabbitmq
+    container_name: rabbitmq2
+    hostname: rabbitmq2
+    environment:
+      <<: *rabbitmq-env
+      RABBITMQ_NODENAME: rabbit@rabbitmq2
+    volumes:
+      - rabbit2_data_test:/var/lib/rabbitmq
+      - ./rabbitmq/cluster-entrypoint.sh:/usr/local/bin/cluster-entrypoint.sh:ro  # скрипт для присоединения к кластеру
+    depends_on:
+      - rabbitmq1       # узел 1 должен быть доступен
+    command: ["/usr/local/bin/cluster-entrypoint.sh", "rabbitmq2", "rabbitmq1"]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - perfnet
+
+  # -------------------------
+  #   RabbitMQ — узел 3
+  # -------------------------
+  rabbitmq3:
+    build:
+      context: ./rabbitmq
+    container_name: rabbitmq3
+    hostname: rabbitmq3
+    environment:
+      <<: *rabbitmq-env
+      RABBITMQ_NODENAME: rabbit@rabbitmq3
+    volumes:
+      - rabbit3_data_test:/var/lib/rabbitmq
+      - ./rabbitmq/cluster-entrypoint.sh:/usr/local/bin/cluster-entrypoint.sh:ro
+    depends_on:
+      - rabbitmq1
+    command: ["/usr/local/bin/cluster-entrypoint.sh", "rabbitmq3", "rabbitmq1"]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - perfnet
+
+  perf-test:
+    image: pivotalrabbitmq/perf-test:latest
+    container_name: perf-test
+    depends_on:
+      - rabbitmq1
+      - rabbitmq2
+      - rabbitmq3
+    networks:
+      - perfnet
+    entrypoint: ["sleep","infinity"]
+
+networks:
+  perfnet:
+    driver: bridge
+
+# -------------------------
+#   Персистентные тома
+# -------------------------
+volumes:
+  rabbit1_data_test:
+  rabbit2_data_test:
+  rabbit3_data_test:
